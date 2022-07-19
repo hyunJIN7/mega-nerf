@@ -4,6 +4,9 @@ from pathlib import Path
 import torch
 from torch.nn.modules.utils import consume_prefix_in_state_dict_if_present
 
+import sys
+sys.path.insert(0, '/home/maltese/PycharmProjects/mega-nerf')
+
 from mega_nerf.models.mega_nerf import MegaNeRF
 from mega_nerf.models.mega_nerf_container import MegaNeRFContainer
 from mega_nerf.models.model_utils import get_nerf, get_bg_nerf
