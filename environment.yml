@@ -1,4 +1,4 @@
-name: mega-nerf
+name: mega-nerf2
 channels:
   - pytorch
   - conda-forge

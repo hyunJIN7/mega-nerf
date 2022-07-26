@@ -4,7 +4,7 @@ import torch
 from torch.distributed.elastic.multiprocessing.errors import record
 
 import sys
-sys.path.insert(0, '/home/maltese/PycharmProjects/mega-nerf')
+sys.path.insert(0, '/home/jindo/PycharmProjects/mega-nerf')
 
 from mega_nerf.opts import get_opts_base
 from mega_nerf.runner import Runner

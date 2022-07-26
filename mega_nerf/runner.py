@@ -197,10 +197,17 @@ class Runner:
             if 'RANK' in os.environ and (not self.is_local_master):
                 dist.barrier()
 
+            # if self.hparams.ckpt_path is not None:
             dataset = FilesystemDataset(self.train_items, self.near, self.far, self.ray_altitude_range,
                                         self.hparams.center_pixels, self.device,
                                         [Path(x) for x in sorted(self.hparams.chunk_paths)], self.hparams.num_chunks,
                                         self.hparams.train_scale_factor, self.hparams.disk_flush_size)
+            # else :
+            #     dataset = FilesystemDataset(self.train_items, self.near, self.far, self.ray_altitude_range,
+            #                                 self.hparams.center_pixels, self.device,
+            #                                 None, self.hparams.num_chunks,
+            #                                 self.hparams.train_scale_factor, self.hparams.disk_flush_size)
+
             if self.hparams.ckpt_path is not None:
                 dataset.set_state(checkpoint['dataset_state'])
             if 'RANK' in os.environ and self.is_local_master:
@@ -650,7 +657,9 @@ class Runner:
     def _get_experiment_path(self) -> Path:
         exp_dir = Path(self.hparams.exp_name)
         exp_dir.mkdir(parents=True, exist_ok=True)
-        existing_versions = [int(x.name) for x in exp_dir.iterdir()]
+
+        # output / mill19 / building - pixsfm / 여기 하위 파일 로드하는데 param.pt 도 로드해서 int파트에서 에러 발생
+        existing_versions = [int(x.name) for x in exp_dir.iterdir() if x.is_dir()] #if x.is_dir()
         version = 0 if len(existing_versions) == 0 else max(existing_versions) + 1
         experiment_path = exp_dir / str(version)
         return experiment_path
