@@ -78,6 +78,13 @@ If creating a custom dataset manually, the expected directory structure is:
 2. Train each submodule: ```python mega_nerf/train.py --config_file configs/mega-nerf/${DATASET_NAME}.yml --exp_name $EXP_PATH --dataset_path $DATASET_PATH --chunk_paths $SCRATCH_PATH --cluster_mask_path ${MASK_PATH}/${SUBMODULE_INDEX}```
     - **Note:** training with against full scale data will write hundreds of GBs / several TBs of shuffled data to disk. You can downsample the training data using ```train_scale_factor``` option.
     - **Note:** we provide [a utility script](parscripts/run_8.txt) based on [parscript](https://github.com/mtli/parscript) to start multiple training jobs in parallel. It can run through the following command: ```CONFIG_FILE=configs/mega-nerf/${DATASET_NAME}.yaml EXP_PREFIX=$EXP_PATH DATASET_PATH=$DATASET_PATH CHUNK_PREFIX=$SCRATCH_PATH MASK_PATH=$MASK_PATH python -m parscript.dispatcher parscripts/run_8.txt -g $NUM_GPUS```
+    
+    chunck path : 처음에 존재하지 않아야함. 그니까 지정한 폴더 만들어놓지 않고 그냥 만들어질것으로 예상하고 경로 지정하라는 의미 같음. the directory to chunks_path should not initially exist
+
+`python mega_nerf/train.py --config configs/mega-nerf/building.yaml  --exp_name output/mill19/building-pixsfm --dataset_path data/mill19/building-pixsfm --chunk_paths output/mill19/building-pixsfm-chunk --cluster_mask_path output/mill19/building-pixsfm/0`
+예를 들어 이렇게 구성한다면 실제 `output/mill19/building-pixsfm-chunk` 폴더는 만들어 놓지 않고 실행
+    
+    
 3. Merge the trained submodules into a unified Mega-NeRF model: ```python scripts/merge_submodules.py --config_file configs/mega-nerf/${DATASET_NAME}.yaml  --ckpt_prefix ${EXP_PREFIX}- --centroid_path ${MASK_PATH}/params.pt --output $MERGED_OUTPUT```
 
 ## Evaluation
