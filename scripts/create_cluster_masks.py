@@ -14,6 +14,9 @@ from torch.distributed.elastic.multiprocessing.errors import record
 import sys
 sys.path.insert(0, '/home/maltese/PycharmProjects/mega-nerf')
 
+import sys
+sys.path.insert(0, '/home/hyunjin/PycharmProjects/mega-nerf')
+
 from mega_nerf.misc_utils import main_tqdm, main_print
 from mega_nerf.opts import get_opts_base
 from mega_nerf.ray_utils import get_ray_directions, get_rays
@@ -67,13 +70,13 @@ def main(hparams: Namespace) -> None:
     camera_positions = torch.cat([torch.load(x, map_location='cpu')['c2w'][:3, 3].unsqueeze(0) for x in metadata_paths])
     main_print('Number of images in dir: {}'.format(camera_positions.shape))
 
-    min_position = camera_positions.min(dim=0)[0]
+    min_position = camera_positions.min(dim=0)[0]  #shape (1,3) : 각 x,y,z 별 가장 작은 값
     max_position = camera_positions.max(dim=0)[0]
 
     main_print('Coord range: {} {}'.format(min_position, max_position))
 
     ranges = max_position[1:] - min_position[1:]
-    offsets = [torch.arange(s) * ranges[i] / s + ranges[i] / (s * 2) for i, s in enumerate(hparams.grid_dim)]
+    offsets = [torch.arange(s) * ranges[i] / s + ranges[i] / (s * 2) for i, s in enumerate(hparams.grid_dim)]  #grid input 넣은 shape 대로 나옴. 2 4 --> (2,),(4,)
     centroids = torch.stack((torch.zeros(hparams.grid_dim[0], hparams.grid_dim[1]),  # Ignore altitude dimension
                              torch.ones(hparams.grid_dim[0], hparams.grid_dim[1]) * min_position[1],
                              torch.ones(hparams.grid_dim[0], hparams.grid_dim[1]) * min_position[2])).permute(1, 2, 0)

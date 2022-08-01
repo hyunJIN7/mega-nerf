@@ -650,7 +650,7 @@ class Runner:
     def _get_experiment_path(self) -> Path:
         exp_dir = Path(self.hparams.exp_name)
         exp_dir.mkdir(parents=True, exist_ok=True)
-        existing_versions = [int(x.name) for x in exp_dir.iterdir()]
+        existing_versions = [int(x.name) for x in exp_dir.iterdir() if x.is_dir()]
         version = 0 if len(existing_versions) == 0 else max(existing_versions) + 1
         experiment_path = exp_dir / str(version)
         return experiment_path
