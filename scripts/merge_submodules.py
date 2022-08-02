@@ -1,3 +1,4 @@
+#!/usr/bin/env python
 from argparse import Namespace
 from pathlib import Path
 
@@ -5,7 +6,7 @@ import torch
 from torch.nn.modules.utils import consume_prefix_in_state_dict_if_present
 
 import sys
-sys.path.insert(0, '/home/maltese/PycharmProjects/mega-nerf')
+sys.path.insert(0, '/home/jindo/PycharmProjects/mega-nerf')
 
 from mega_nerf.models.mega_nerf import MegaNeRF
 from mega_nerf.models.mega_nerf_container import MegaNeRFContainer
@@ -34,7 +35,8 @@ def main(hparams: Namespace) -> None:
     sub_modules = []
     bg_sub_modules = []
     for i in range(len(centroids)):
-        centroid_path = ckpt_prefix.parent / '{}{}'.format(ckpt_prefix.name, i)
+        print(ckpt_prefix.parent ,  ckpt_prefix.name, i)
+        centroid_path = ckpt_prefix.parent / '{}/{}'.format(ckpt_prefix.name, i) #TODO: error
 
         if not centroid_path.exists():
             raise Exception('{} not found'.format(centroid_path))
