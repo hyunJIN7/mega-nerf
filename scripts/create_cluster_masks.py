@@ -58,7 +58,7 @@ def main(hparams: Namespace) -> None:
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     dataset_path = Path(hparams.dataset_path)
-    coordinate_info = torch.load(dataset_path / 'coordinates.pt')
+    coordinate_info = torch.load(dataset_path / 'coordinates.pt') # 여기 정보 확인해야해.
     origin_drb = coordinate_info['origin_drb']
     pose_scale_factor = coordinate_info['pose_scale_factor']
 
@@ -77,12 +77,12 @@ def main(hparams: Namespace) -> None:
 
     ranges = max_position[1:] - min_position[1:]
     offsets = [torch.arange(s) * ranges[i] / s + ranges[i] / (s * 2) for i, s in enumerate(hparams.grid_dim)]  #grid input 넣은 shape 대로 나옴. 2 4 --> (2,),(4,)
-    centroids = torch.stack((torch.zeros(hparams.grid_dim[0], hparams.grid_dim[1]),  # Ignore altitude dimension
+    centroids = torch.stack((torch.zeros(hparams.grid_dim[0], hparams.grid_dim[1]),  # Ignore altitude dimension  ,shape : (2,4,3)  3,grid input shpae
                              torch.ones(hparams.grid_dim[0], hparams.grid_dim[1]) * min_position[1],
                              torch.ones(hparams.grid_dim[0], hparams.grid_dim[1]) * min_position[2])).permute(1, 2, 0)
     centroids[:, :, 1] += offsets[0].unsqueeze(1)
     centroids[:, :, 2] += offsets[1]
-    centroids = centroids.view(-1, 3)
+    centroids = centroids.view(-1, 3) #(8,3)
 
     main_print('Centroids: {}'.format(centroids))
 
@@ -105,7 +105,7 @@ def main(hparams: Namespace) -> None:
         'max_position': max_position
     }, output_path / 'params.pt')
 
-    z_steps = torch.linspace(0, 1, hparams.ray_samples, device=device)  # (N_samples)
+    z_steps = torch.linspace(0, 1, hparams.ray_samples, device=device)  # (N_samples)  #0~1까지 ray_samples(=1000)로 나눔
     centroids = centroids.to(device)
 
     if rank == 0 and not hparams.resume:
@@ -119,7 +119,7 @@ def main(hparams: Namespace) -> None:
         metadata_paths = list((dataset_path / subdir / 'metadata').iterdir())
         for i in main_tqdm(np.arange(rank, len(metadata_paths), world_size)):
             metadata_path = metadata_paths[i]
-
+            #여긴 디버깅 건너뛰어짐. 무슨 내용인지는 모르겠으나 중요한건 아닌 것 같
             if hparams.resume:
                 # Check to see if mask has been generated already
                 all_valid = True
@@ -143,7 +143,7 @@ def main(hparams: Namespace) -> None:
                     continue
 
             metadata = torch.load(metadata_path, map_location='cpu')
-
+            # HERE!!!
             c2w = metadata['c2w'].to(device)
             intrinsics = metadata['intrinsics']
             directions = get_ray_directions(metadata['W'],
@@ -154,7 +154,7 @@ def main(hparams: Namespace) -> None:
                                             intrinsics[3],
                                             hparams.center_pixels,
                                             device)
-
+            # 여기 내용 잘 모르겠다.
             rays = get_rays(directions, c2w, near, far, ray_altitude_range).view(-1, 8)
 
             min_dist_ratios = []
@@ -165,30 +165,30 @@ def main(hparams: Namespace) -> None:
                 near_bounds, far_bounds = rays[j:j + hparams.ray_chunk_size, 6:7], \
                                           rays[j:j + hparams.ray_chunk_size, 7:8]  # both (N_rays, 1)
                 z_vals = near_bounds * (1 - z_steps) + far_bounds * z_steps
+                # 1000 points in range from near to far in each ray between near and far
 
                 xyz = rays_o.unsqueeze(1) + rays_d.unsqueeze(1) * z_vals.unsqueeze(-1)
                 del rays_d
                 del z_vals
                 xyz = xyz.view(-1, 3)
-
+                #each ray의 near,far 범위의 1000개 point position과  cluster center 간의 vector norm 거의 연산
                 min_distances = []
                 cluster_distances = []
                 for i in range(0, xyz.shape[0], hparams.dist_chunk_size):
-                    distances = torch.cdist(xyz[i:i + hparams.dist_chunk_size], centroids)
+                    distances = torch.cdist(xyz[i:i + hparams.dist_chunk_size], centroids) #(,8)
                     cluster_distances.append(distances)
                     min_distances.append(distances.min(dim=1)[0])
 
                 del xyz
 
-                cluster_distances = torch.cat(cluster_distances).view(rays_o.shape[0], -1,
-                                                                      centroids.shape[0])  # (rays, samples, clusters)
-                min_distances = torch.cat(min_distances).view(rays_o.shape[0], -1)  # (rays, samples)
+                cluster_distances = torch.cat(cluster_distances).view(rays_o.shape[0], -1,centroids.shape[0])  # (rays, samples, clusters)!!!!
+                min_distances = torch.cat(min_distances).view(rays_o.shape[0], -1)  # (rays, samples)!!!
                 min_dist_ratio = (cluster_distances / (min_distances.unsqueeze(-1) + 1e-8)).min(dim=1)[0]
                 del min_distances
                 del cluster_distances
                 del rays_o
                 min_dist_ratios.append(min_dist_ratio)  # (rays, clusters)
-
+            #Here!!!
             min_dist_ratios = torch.cat(min_dist_ratios).view(metadata['H'], metadata['W'], centroids.shape[0])
 
             for i in range(centroids.shape[0]):

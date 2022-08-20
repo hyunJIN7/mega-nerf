@@ -7,17 +7,18 @@ def get_ray_directions(W: int, H: int, fx: float, fy: float, cx: float, cy: floa
                        device: torch.device) -> torch.Tensor:
     i, j = torch.meshgrid(torch.arange(W, dtype=torch.float32, device=device),
                           torch.arange(H, dtype=torch.float32, device=device), indexing='xy')
+    # torch.arange(W, dtype=torch.float32, device=device) : 0,1,... W-1 까지 float 타입으로
+    # i,j : shape(H,W)
     if center_pixels:
         i = i.clone() + 0.5
         j = j.clone() + 0.5
 
-    directions = \
-        torch.stack([(i - cx) / fx, -(j - cy) / fy, -torch.ones_like(i)], -1)  # (H, W, 3)
+    directions = torch.stack([(i - cx) / fx, -(j - cy) / fy, -torch.ones_like(i)], -1)  # (H, W, 3)
     directions /= torch.linalg.norm(directions, dim=-1, keepdim=True)
 
     return directions
 
-
+#ray direction & origin
 def get_rays(directions: torch.Tensor, c2w: torch.Tensor, near: float, far: float,
              ray_altitude_range: List[float]) -> torch.Tensor:
     # Rotate ray directions from camera coordinate to the world coordinate
