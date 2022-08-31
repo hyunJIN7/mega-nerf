@@ -9,18 +9,17 @@ def get_ray_directions(W: int, H: int, fx: float, fy: float, cx: float, cy: floa
                        device: torch.device) -> torch.Tensor:
     i, j = torch.meshgrid(torch.arange(W, dtype=torch.float32, device=device),
                           torch.arange(H, dtype=torch.float32, device=device), indexing='xy')
-    # torch.arange(W, dtype=torch.float32, device=device) : 0,1,... W-1 까지 float 타입으로
-    # i,j : shape(H,W)
     if center_pixels:
         i = i.clone() + 0.5
         j = j.clone() + 0.5
 
-    directions = torch.stack([(i - cx) / fx, -(j - cy) / fy, -torch.ones_like(i)], -1)  # (H, W, 3)
+    directions = \
+        torch.stack([(i - cx) / fx, -(j - cy) / fy, -torch.ones_like(i)], -1)  # (H, W, 3)
     directions /= torch.linalg.norm(directions, dim=-1, keepdim=True)
 
     return directions
 
-#ray direction & origin
+
 def get_rays(directions: torch.Tensor, c2w: torch.Tensor, near: float, far: float,
              ray_altitude_range: List[float]) -> torch.Tensor:
     # Rotate ray directions from camera coordinate to the world coordinate
@@ -67,7 +66,7 @@ def _get_rays_inner(rays_o: torch.Tensor, rays_d: torch.Tensor, near: float, far
 
 def _truncate_with_plane_intersection(rays_o: torch.Tensor, rays_d: torch.Tensor, altitude: float,
                                       default_bounds: torch.Tensor) -> None:  #TODO : ray near,far 픽셀마다 값 달라지는 파트
-    starts_before = rays_o[:, :, 0] < altitude  #시작 지점이 고도 범위 내에 있는지 확인 
+    starts_before = rays_o[:, :, 0] < altitude  #시작 지점이 고도 범위 내에 있는지 확인
     goes_down = rays_d[:, :, 0] > 0  # x가 고도 방향이니까 양수면 아래로 내려가는 방향인지 확인
     boundable_rays = torch.minimum(starts_before, goes_down)
     #ray 시작 지점에 altitude 범위 내에 있고 ray가 내려가는 방향만
@@ -85,12 +84,11 @@ def _truncate_with_plane_intersection(rays_o: torch.Tensor, rays_d: torch.Tensor
     si = -w.mm(plane_normal) / ndotu  # new_ray_o에서 고도값만 ray_d의 고도 방향 성분으로 나눠
     plane_intersection = w + si * ray_directions + plane_point
 
-
-
     #여기 값들 그려보자!!!!!!!!!!!
     scatter_point(w,ray_points,plane_point)
     plot_line(ray_directions,ndotu)
     scatter_point(si,w)
     scatter_point(plane_intersection,w,plane_point)
+    print('testing')
 
     default_bounds[boundable_rays] = (ray_points - plane_intersection).norm(dim=-1).unsqueeze(1)

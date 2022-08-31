@@ -149,7 +149,7 @@ class Runner:
                 self.sphere_radius = ((max_position - min_position) * 0.5).to(self.device)
                 scale_factor = ((used_positions.to(self.device) - self.sphere_center) / self.sphere_radius).norm(dim=-1).max()
 
-                self.sphere_radius *= (scale_factor * hparams.ellipse_scale_factor)  #TODO: 기존 scale factor와 타원 scale factor도 곱해줌
+                self.sphere_radius *= (scale_factor * hparams.ellipse_scale_factor)  #TODO: 기존 scale factor와 타원 scale factor(1.1)도 곱해줌
             else:
                 self.sphere_center = None
                 self.sphere_radius = None

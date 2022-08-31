@@ -56,7 +56,7 @@ def main(hparams: Namespace) -> None:
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     dataset_path = Path(hparams.dataset_path)
-    coordinate_info = torch.load(dataset_path / 'coordinates.pt')
+    coordinate_info = torch.load(dataset_path / 'coordinates.pt', map_location='cpu')
     origin_drb = coordinate_info['origin_drb']
     pose_scale_factor = coordinate_info['pose_scale_factor']
 
@@ -80,7 +80,7 @@ def main(hparams: Namespace) -> None:
                              torch.ones(hparams.grid_dim[0], hparams.grid_dim[1]) * min_position[2])).permute(1, 2, 0)
     centroids[:, :, 1] += offsets[0].unsqueeze(1)
     centroids[:, :, 2] += offsets[1]
-    centroids = centroids.view(-1, 3) #(8,3)
+    centroids = centroids.view(-1, 3)
 
     main_print('Centroids: {}'.format(centroids))
 
@@ -119,7 +119,7 @@ def main(hparams: Namespace) -> None:
         metadata_paths = list((dataset_path / subdir / 'metadata').iterdir())
         for i in main_tqdm(np.arange(rank, len(metadata_paths), world_size)):
             metadata_path = metadata_paths[i]
-            #여긴 디버깅 건너뛰어짐. 무슨 내용인지는 모르겠으나 중요한건 아닌 것 같
+
             if hparams.resume:
                 # Check to see if mask has been generated already
                 all_valid = True
@@ -165,13 +165,12 @@ def main(hparams: Namespace) -> None:
                 near_bounds, far_bounds = rays[j:j + hparams.ray_chunk_size, 6:7], \
                                           rays[j:j + hparams.ray_chunk_size, 7:8]  # both (N_rays, 1)
                 z_vals = near_bounds * (1 - z_steps) + far_bounds * z_steps
-                # 1000 points in range from near to far in each ray between near and far
 
                 xyz = rays_o.unsqueeze(1) + rays_d.unsqueeze(1) * z_vals.unsqueeze(-1)
                 del rays_d
                 del z_vals
                 xyz = xyz.view(-1, 3)
-                #each ray의 near,far 범위의 1000개 point position과  cluster center 간의 vector norm 거의 연산
+
                 min_distances = []
                 cluster_distances = []
                 for k in range(0, xyz.shape[0], hparams.dist_chunk_size):

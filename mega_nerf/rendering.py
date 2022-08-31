@@ -418,7 +418,8 @@ def _intersect_sphere(rays_o: torch.Tensor, rays_d: torch.Tensor, sphere_center:
 
     scatter_point(rays_d,rays_o,d1)
     scatter_point(rays_o,d1,p)
-    plot_line(d1,)
+    plot_line(d1)
+    plot_line(p,p_norm_sq)
     return d1 + d2
 
 
