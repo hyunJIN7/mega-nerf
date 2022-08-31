@@ -1,3 +1,4 @@
 val_scale_factor: 1
 no_ellipse_bounds: true
-val_interval: 1000000
+all_val: True
+cluster_2d: True

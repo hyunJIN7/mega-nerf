@@ -36,7 +36,7 @@ from mega_nerf.rendering import render_rays
 
 
 class Runner:
-    def __init__(self, hparams: Namespace, set_experiment_path: bool=True):
+    def __init__(self, hparams: Namespace, set_experiment_path: bool = True):
         faulthandler.register(signal.SIGUSR1)
 
         if hparams.ckpt_path is not None:
@@ -101,26 +101,27 @@ class Runner:
 
             if self.ray_altitude_range is not None:
                 assert (torch.allclose(torch.FloatTensor(cluster_params['ray_altitude_range']),
-                                       torch.FloatTensor(self.ray_altitude_range)))
+                                       torch.FloatTensor(self.ray_altitude_range))), \
+                    '{} {}'.format(self.ray_altitude_range, cluster_params['ray_altitude_range'])
 
         self.train_items, self.val_items = self._get_image_metadata()
         main_print('Using {} train images and {} val images'.format(len(self.train_items), len(self.val_items)))
 
-        camera_positions = torch.cat([x.c2w[:3, 3].unsqueeze(0) for x in self.train_items + self.val_items])
+        camera_positions = torch.cat([x.c2w[:3, 3].unsqueeze(0) for x in self.train_items + self.val_items])  #TODO : 여기 이렇게 출력한거 보니까  지금 이 값이 scale_fator로 나눠준 값이 되나봐
         min_position = camera_positions.min(dim=0)[0]
         max_position = camera_positions.max(dim=0)[0]
 
-        main_print('Camera range in metric space: {} {}'.format(min_position * self.pose_scale_factor + self.origin_drb,
+        main_print('Camera range in metric space: {} {}'.format(min_position * self.pose_scale_factor + self.origin_drb,  #TODO : !!! scale_factor part!!!
                                                                 max_position * self.pose_scale_factor + self.origin_drb))
 
         main_print('Camera range in [-1, 1] space: {} {}'.format(min_position, max_position))
-
+        # NeRF inner model
         self.nerf = get_nerf(hparams, len(self.train_items)).to(self.device)
         if 'RANK' in os.environ:
             self.nerf = torch.nn.parallel.DistributedDataParallel(self.nerf, device_ids=[int(os.environ['LOCAL_RANK'])],
                                                                   output_device=int(os.environ['LOCAL_RANK']))
 
-        if hparams.bg_nerf:
+        if hparams.bg_nerf: # NeRF bg model
             self.bg_nerf = get_bg_nerf(hparams, len(self.train_items)).to(self.device)
             if 'RANK' in os.environ:
                 self.bg_nerf = torch.nn.parallel.DistributedDataParallel(self.bg_nerf,
@@ -131,22 +132,24 @@ class Runner:
                 assert hparams.ray_altitude_range is not None
 
                 if self.ray_altitude_range is not None:
-                    ground_poses = camera_positions.clone()
+                    #ray의 고도 범위를 적용
+                    ground_poses = camera_positions.clone()  # train,val meta data c2w location
                     ground_poses[:, 0] = self.ray_altitude_range[1]
-                    used_positions = torch.cat([camera_positions, ground_poses])
+                    air_poses = camera_positions.clone()
+                    air_poses[:, 0] = self.ray_altitude_range[0]
+                    used_positions = torch.cat([camera_positions, air_poses, ground_poses])
                 else:
                     used_positions = camera_positions
-
+                #max position의 고도 값을 ray의 ground pose 값으로 지정
                 max_position[0] = self.ray_altitude_range[1]
                 main_print('Camera range in [-1, 1] space with ray altitude range: {} {}'.format(min_position,
                                                                                                  max_position))
 
                 self.sphere_center = ((max_position + min_position) * 0.5).to(self.device)
                 self.sphere_radius = ((max_position - min_position) * 0.5).to(self.device)
-                scale_factor = ((used_positions.to(self.device) - self.sphere_center) / self.sphere_radius).norm(
-                    dim=-1).max()
+                scale_factor = ((used_positions.to(self.device) - self.sphere_center) / self.sphere_radius).norm(dim=-1).max()
 
-                self.sphere_radius *= (scale_factor * 1.1)
+                self.sphere_radius *= (scale_factor * hparams.ellipse_scale_factor)  #TODO: 기존 scale factor와 타원 scale factor도 곱해줌
             else:
                 self.sphere_center = None
                 self.sphere_radius = None
@@ -179,7 +182,7 @@ class Runner:
                 optimizer_dict = optimizer.state_dict()
                 optimizer_dict.update(checkpoint['optimizers'][key])
                 optimizer.load_state_dict(optimizer_dict)
-            discard_index = checkpoint['dataset_index']
+            discard_index = checkpoint['dataset_index'] if self.hparams.resume_ckpt_state else -1
         else:
             train_iterations = 0
             discard_index = -1
@@ -201,7 +204,7 @@ class Runner:
                                         self.hparams.center_pixels, self.device,
                                         [Path(x) for x in sorted(self.hparams.chunk_paths)], self.hparams.num_chunks,
                                         self.hparams.train_scale_factor, self.hparams.disk_flush_size)
-            if self.hparams.ckpt_path is not None:
+            if self.hparams.ckpt_path is not None and self.hparams.resume_ckpt_state:
                 dataset.set_state(checkpoint['dataset_state'])
             if 'RANK' in os.environ and self.is_local_master:
                 dist.barrier()
@@ -240,7 +243,7 @@ class Runner:
 
                 with torch.cuda.amp.autocast(enabled=self.hparams.amp):
                     if self.hparams.appearance_dim > 0:
-                        image_indices = item['image_indices'].to(self.device, non_blocking=True)
+                        image_indices = item['img_indices'].to(self.device, non_blocking=True)
                     else:
                         image_indices = None
 
@@ -251,7 +254,7 @@ class Runner:
 
                     with torch.no_grad():
                         for key, val in metrics.items():
-                            if key == 'psnr' and math.isinf(val): # a perfect reproduction will give PSNR = infinity
+                            if key == 'psnr' and math.isinf(val):  # a perfect reproduction will give PSNR = infinity
                                 continue
 
                             if not math.isfinite(val):
@@ -297,21 +300,20 @@ class Runner:
             self._save_checkpoint(optimizers, scaler, train_iterations, dataset_index,
                                   dataset.get_state() if self.hparams.dataset_type == 'filesystem' else None)
 
-        val_metrics = self._run_validation(train_iterations)
-        self._write_final_metrics(val_metrics)
+        if self.hparams.cluster_mask_path is None:
+            val_metrics = self._run_validation(train_iterations)
+            self._write_final_metrics(val_metrics)
 
     def eval(self):
         self._setup_experiment_dir()
         val_metrics = self._run_validation(0)
         self._write_final_metrics(val_metrics)
 
-    def _write_final_metrics(self, val_metrics):
+    def _write_final_metrics(self, val_metrics: Dict[str, float]) -> None:
         if self.is_master:
             with (self.experiment_path / 'metrics.txt').open('w') as f:
                 for key in val_metrics:
                     avg_val = val_metrics[key] / len(self.val_items)
-                    avg_metric_key = '{}/avg'.format(key)
-                    self.writer.add_scalar(avg_metric_key, avg_val, 0)
                     message = 'Average {}: {}'.format(key, avg_val)
                     main_print(message)
                     f.write('{}\n'.format(message))
@@ -402,7 +404,7 @@ class Runner:
 
                 for i in main_tqdm(indices_to_eval):
                     metadata_item = self.val_items[i]
-                    viz_rgbs = metadata_item.load_image()
+                    viz_rgbs = metadata_item.load_image().float() / 255.
 
                     results, _ = self.render_image(metadata_item)
                     typ = 'fine' if 'rgb_fine' in results else 'coarse'
@@ -500,6 +502,11 @@ class Runner:
                         for image_file in image_path.iterdir():
                             img = Image.open(str(image_file))
                             self.writer.add_image('val/{}'.format(image_file.stem), T.ToTensor()(img), train_index)
+
+                        for key in val_metrics:
+                            avg_val = val_metrics[key] / len(self.val_items)
+                            self.writer.add_scalar('{}/avg'.format(key), avg_val, 0)
+
                     dist.barrier()
 
                 self.nerf.train()
@@ -548,12 +555,12 @@ class Runner:
                 if self.hparams.appearance_dim > 0 else None
             results = {}
 
-            if 'RANK' in os.environ and not self.hparams.use_cascade:  # Cascade will get unwrapped in render_rays
+            if 'RANK' in os.environ:
                 nerf = self.nerf.module
             else:
                 nerf = self.nerf
 
-            if self.bg_nerf is not None and 'RANK' in os.environ and not self.hparams.use_cascade:
+            if self.bg_nerf is not None and 'RANK' in os.environ:
                 bg_nerf = self.bg_nerf.module
             else:
                 bg_nerf = self.bg_nerf
@@ -642,10 +649,20 @@ class Runner:
         assert metadata['W'] % scale_factor == 0
         assert metadata['H'] % scale_factor == 0
 
-        mask_path = Path(
-            self.hparams.cluster_mask_path) / metadata_path.name if self.hparams.cluster_mask_path is not None else None
+        dataset_mask = metadata_path.parent.parent.parent / 'masks' / metadata_path.name
+        if self.hparams.cluster_mask_path is not None:
+            if image_index == 0:
+                main_print('Using cluster mask path: {}'.format(self.hparams.cluster_mask_path))
+            mask_path = Path(self.hparams.cluster_mask_path) / metadata_path.name
+        elif dataset_mask.exists():
+            if image_index == 0:
+                main_print('Using dataset mask path: {}'.format(dataset_mask.parent))
+            mask_path = dataset_mask
+        else:
+            mask_path = None
+
         return ImageMetadata(image_path, metadata['c2w'], metadata['W'] // scale_factor, metadata['H'] // scale_factor,
-                             intrinsics, image_index, mask_path, is_val)
+                             intrinsics, image_index, None if (is_val and self.hparams.all_val) else mask_path, is_val)
 
     def _get_experiment_path(self) -> Path:
         exp_dir = Path(self.hparams.exp_name)

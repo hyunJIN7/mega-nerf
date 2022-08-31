@@ -32,9 +32,6 @@ from svox.helpers import _get_c_extension
 from torch import nn
 from tqdm import tqdm
 
-import sys
-sys.path.insert(0, '/home/jindo/PycharmProjects/mega-nerf')
-
 from mega_nerf.models.model_utils import get_nerf
 from mega_nerf.opts import get_opts_base
 
@@ -87,7 +84,7 @@ def _auto_scale(hparams: Namespace, nerf: nn.Module, center: List[float], radius
     for i in tqdm(range(0, grid.shape[0], hparams.model_chunk_size)):
         grid_chunk = grid[i:i + hparams.model_chunk_size].to(device)
 
-        output = nerf(grid_chunk, sigma_only=True)
+        output = nerf(False, grid_chunk, sigma_only=True) if hparams.use_cascade else nerf(grid_chunk, sigma_only=True)
         sigmas = output[:, 0]
         mask = sigmas >= sigma_thresh
         grid_chunk = grid_chunk[mask]
@@ -158,7 +155,7 @@ def _step1(hparams: Namespace, nerf: nn.Module, tree: N3Tree, poses: torch.Tenso
     out_chunks = []
     for i in tqdm(range(0, grid.shape[0], hparams.model_chunk_size)):
         grid_chunk = grid[i:i + hparams.model_chunk_size].to(device)
-        result = nerf(grid_chunk, sigma_only=True)
+        result = nerf(False, grid_chunk, sigma_only=True) if hparams.use_cascade else nerf(grid_chunk, sigma_only=True)
         del grid_chunk
         out_chunks.append(result[:, 0])
 
@@ -202,9 +199,11 @@ def _step2(hparams: Namespace, nerf: nn.Module, tree: N3Tree, device: torch.devi
             dirs[:, 0] = 1
             points = torch.cat([points, dirs], -1)
 
-        points = torch.cat([points, hparams.embedding_index * torch.ones(points.shape[0], 1, device=points.device)], -1)
+        if hparams.appearance_dim > 0:
+            points = torch.cat([points, hparams.embedding_index * torch.ones(points.shape[0], 1, device=points.device)],
+                               -1)
 
-        rgba = nerf(points)
+        rgba = nerf(False, points) if hparams.use_cascade else nerf(points)
         rgba = rgba.reshape(-1, hparams.samples_per_cell, tree.data_dim).mean(dim=1)
 
         tree[i:i + chunk_size] = rgba.cpu()
@@ -216,10 +215,13 @@ def main(hparams: Namespace) -> None:
     assert hparams.ray_altitude_range is not None
 
     dataset_path = Path(hparams.dataset_path)
-    metadata_paths = list((dataset_path / 'train' / 'metadata').iterdir()) \
-                     + list((dataset_path / 'val' / 'metadata').iterdir())
+    train_path_candidates = sorted(list((dataset_path / 'train' / 'metadata').iterdir()))
+    train_paths = [train_path_candidates[i] for i in
+                   range(0, len(train_path_candidates), hparams.train_every)]
 
-    poses = torch.cat([torch.load(x)['c2w'].unsqueeze(0) for x in metadata_paths])
+    metadata_paths = train_paths + list((dataset_path / 'val' / 'metadata').iterdir())
+
+    poses = torch.cat([torch.load(x, map_location='cpu')['c2w'].unsqueeze(0) for x in metadata_paths])
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     nerf = get_nerf(hparams, poses.shape[0]).to(device).eval()

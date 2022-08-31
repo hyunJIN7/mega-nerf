@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from mega_nerf.spherical_harmonics import eval_sh
+from mega_nerf.misc_utils import *
 
 TO_COMPOSITE = {'rgb', 'depth'}
 INTERMEDIATE_KEYS = {'zvals_coarse', 'raw_rgb_coarse', 'raw_sigma_coarse', 'depth_real_coarse'}
@@ -32,6 +33,7 @@ def render_rays(nerf: nn.Module,
     perturb = hparams.perturb if nerf.training else 0
     last_delta = 1e10 * torch.ones(N_rays, 1, device=rays.device)
     if bg_nerf is not None:
+        #Here!!!!!!!!!!!
         fg_far = _intersect_sphere(rays_o, rays_d, sphere_center, sphere_radius)
         fg_far = torch.maximum(fg_far, near.squeeze())
         rays_with_bg = torch.arange(N_rays, device=rays_o.device)[far.squeeze() > fg_far]
@@ -50,8 +52,10 @@ def render_rays(nerf: nn.Module,
                                                    rays_with_bg.shape[0])
 
             include_xyz_real = hparams.container_path is not None or hparams.train_mega_nerf is not None
+            cluster_2d = include_xyz_real and nerf.cluster_dim_start == 1
             bg_pts, depth_real = _depth2pts_outside(rays_o[rays_with_bg], rays_d[rays_with_bg], bg_z_vals,
-                                                    sphere_center, sphere_radius, include_xyz_real)
+                                                    sphere_center, sphere_radius, include_xyz_real,
+                                                    cluster_2d)
 
             bg_results = _get_results(nerf=bg_nerf,
                                       rays_d=rays_d[rays_with_bg],
@@ -69,7 +73,8 @@ def render_rays(nerf: nn.Module,
                                                                                          rays_d[rays_with_bg],
                                                                                          fine_z_vals,
                                                                                          sphere_center, sphere_radius,
-                                                                                         include_xyz_real))
+                                                                                         include_xyz_real,
+                                                                                         cluster_2d))
 
     else:
         rays_o = rays_o.view(rays_o.shape[0], 1, rays_o.shape[1])
@@ -142,8 +147,10 @@ def render_rays(nerf: nn.Module,
         bg_z_vals = _expand_and_perturb_z_vals(bg_z_vals, hparams.coarse_samples // 2, perturb, 1)
 
         include_xyz_real = hparams.train_mega_nerf is not None
+        cluster_2d = include_xyz_real and nerf.cluster_dim_start == 1
+
         bg_pts, depth_real = _depth2pts_outside(rays_o[:1], rays_d[:1], bg_z_vals,
-                                                sphere_center, sphere_radius, include_xyz_real)
+                                                sphere_center, sphere_radius, include_xyz_real, cluster_2d)
         grad_results = _get_results(nerf=bg_nerf,
                                     rays_d=rays_d[:1],
                                     image_indices=image_indices[:1] if image_indices is not None else None,
@@ -160,7 +167,8 @@ def render_rays(nerf: nn.Module,
                                                                                        rays_d[:1],
                                                                                        fine_z_vals,
                                                                                        sphere_center, sphere_radius,
-                                                                                       include_xyz_real))
+                                                                                       include_xyz_real,
+                                                                                       cluster_2d))
         results[f'rgb_{types[0]}'][:0] += 0 * grad_results[f'rgb_{types[0]}']
         bg_nerf_rays_present = True
 
@@ -186,17 +194,9 @@ def _get_results(nerf: nn.Module,
     last_delta_diff = torch.zeros_like(last_delta)
     last_delta_diff[last_delta.squeeze() < 1e10, 0] = z_vals[last_delta.squeeze() < 1e10].max(dim=-1)[0]
 
-    if hparams.use_cascade:
-        if 'RANK' in os.environ:
-            to_use = nerf.module.coarse
-        else:
-            to_use = nerf.coarse
-    else:
-        to_use = nerf
-
     _inference(results=results,
                typ='coarse',
-               nerf=to_use,
+               nerf=nerf,
                rays_d=rays_d,
                image_indices=image_indices,
                hparams=hparams,
@@ -226,17 +226,9 @@ def _get_results(nerf: nn.Module,
         last_delta_diff = torch.zeros_like(last_delta)
         last_delta_diff[last_delta.squeeze() < 1e10, 0] = fine_z_vals[last_delta.squeeze() < 1e10].max(dim=-1)[0]
 
-        if hparams.use_cascade:
-            if 'RANK' in os.environ:
-                to_use = nerf.module.fine
-            else:
-                to_use = nerf.fine
-        else:
-            to_use = nerf
-
         _inference(results=results,
                    typ='fine',
-                   nerf=to_use,
+                   nerf=nerf,
                    rays_d=rays_d,
                    image_indices=image_indices,
                    hparams=hparams,
@@ -298,11 +290,13 @@ def _inference(results: Dict[str, torch.Tensor],
 
         for i in range(0, B, hparams.model_chunk_size):
             xyz_chunk = xyz_[i:i + hparams.model_chunk_size]
+            if image_indices is not None:
+                xyz_chunk = torch.cat([xyz_chunk, image_indices_[i:i + hparams.model_chunk_size]], 1)
+
             sigma_noise = torch.rand(len(xyz_chunk), 1, device=xyz_chunk.device) if nerf.training else None
 
-            if image_indices is not None:
-                model_chunk = nerf(torch.cat([xyz_chunk, image_indices_[i:i + hparams.model_chunk_size]], 1),
-                                   sigma_noise=sigma_noise)
+            if hparams.use_cascade:
+                model_chunk = nerf(typ == 'coarse', xyz_chunk, sigma_noise=sigma_noise)
             else:
                 model_chunk = nerf(xyz_chunk, sigma_noise=sigma_noise)
 
@@ -320,14 +314,20 @@ def _inference(results: Dict[str, torch.Tensor],
             xyz_chunk = xyz_[i:i + hparams.model_chunk_size]
 
             if image_indices is not None:
-                xyzdir = torch.cat([xyz_chunk,
-                                    rays_d_[i:i + hparams.model_chunk_size],
-                                    image_indices_[i:i + hparams.model_chunk_size]], 1)
+                xyz_chunk = torch.cat([xyz_chunk,
+                                       rays_d_[i:i + hparams.model_chunk_size],
+                                       image_indices_[i:i + hparams.model_chunk_size]], 1)
             else:
-                xyzdir = torch.cat([xyz_chunk, rays_d_[i:i + hparams.model_chunk_size]], 1)
+                xyz_chunk = torch.cat([xyz_chunk, rays_d_[i:i + hparams.model_chunk_size]], 1)
 
             sigma_noise = torch.rand(len(xyz_chunk), 1, device=xyz_chunk.device) if nerf.training else None
-            out_chunks += [nerf(xyzdir, sigma_noise=sigma_noise)]
+
+            if hparams.use_cascade:
+                model_chunk = nerf(typ == 'coarse', xyz_chunk, sigma_noise=sigma_noise)
+            else:
+                model_chunk = nerf(xyz_chunk, sigma_noise=sigma_noise)
+
+            out_chunks += [model_chunk]
 
     out = torch.cat(out_chunks, 0)
     out = out.view(N_rays_, N_samples_, out.shape[-1])
@@ -403,24 +403,27 @@ def _intersect_sphere(rays_o: torch.Tensor, rays_d: torch.Tensor, sphere_center:
 
     '''
     rays_o, rays_d: [..., 3]
-    compute the depth of the intersection point between this ray and unit sphere
+    compute the depth of the intersection point between this ray and unit sphere --> ray와 단위구의 교차점 depth 구하기 위해
     '''
     # note: d1 becomes negative if this mid point is behind camera
-    d1 = -torch.sum(rays_d * rays_o, dim=-1) / torch.sum(rays_d * rays_d, dim=-1)
-    p = rays_o + d1.unsqueeze(-1) * rays_d
-    # consider the case where the ray does not intersect the sphere
+    d1 = -torch.sum(rays_d * rays_o, dim=-1) / torch.sum(rays_d * rays_d, dim=-1)  # TODO: ?????? , 구와 ray가 교차하는 지점의 depth , 거리인가봐
+    p = rays_o + d1.unsqueeze(-1) * rays_d   # ray와 sphere의 교차점
+    # consider the case where the ray does not intersect the sphere , ray와 sphere가 교차하지 않을 경우
     ray_d_cos = 1. / torch.norm(rays_d, dim=-1)
-    p_norm_sq = torch.sum(p * p, dim=-1)
+    p_norm_sq = torch.sum(p * p, dim=-1)  #결국 내적연산
     if (p_norm_sq >= 1.).any():
         raise Exception(
             'Not all your cameras are bounded by the unit sphere; please make sure the cameras are normalized properly!')
     d2 = torch.sqrt(1. - p_norm_sq) * ray_d_cos
 
+    scatter_point(rays_d,rays_o,d1)
+    scatter_point(rays_o,d1,p)
+    plot_line(d1,)
     return d1 + d2
 
 
 def _depth2pts_outside(rays_o: torch.Tensor, rays_d: torch.Tensor, depth: torch.Tensor, sphere_center: torch.Tensor,
-                       sphere_radius: torch.Tensor, include_xyz_real: bool):
+                       sphere_radius: torch.Tensor, include_xyz_real: bool, cluster_2d: bool):
     '''
     rays_o, rays_d: [..., 3]
     depth: [...]; inverse of distance to sphere origin
@@ -457,8 +460,14 @@ def _depth2pts_outside(rays_o: torch.Tensor, rays_d: torch.Tensor, depth: torch.
     depth_real = 1. / (depth + 1e-8) * torch.cos(theta) + d1
 
     if include_xyz_real:
-        boundary = rays_o_orig + rays_d_orig * (d1 + d2).unsqueeze(-1)
-        pts = torch.cat((boundary.repeat(1, p_sphere_new.shape[1], 1), p_sphere_new, depth.unsqueeze(-1)), dim=-1)
+        if cluster_2d:
+            pts = torch.cat(
+                (rays_o_orig + rays_d_orig * depth_real.unsqueeze(-1), p_sphere_new, depth.unsqueeze(-1)),
+                dim=-1)
+        else:
+            boundary = rays_o_orig + rays_d_orig * (d1 + d2).unsqueeze(-1)
+            pts = torch.cat((boundary.repeat(1, p_sphere_new.shape[1], 1), p_sphere_new, depth.unsqueeze(-1)), dim=-1)
+
     else:
         pts = torch.cat((p_sphere_new, depth.unsqueeze(-1)), dim=-1)
 

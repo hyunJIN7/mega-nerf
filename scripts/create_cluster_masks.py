@@ -12,10 +12,7 @@ import torch.distributed as dist
 from torch.distributed.elastic.multiprocessing.errors import record
 
 import sys
-sys.path.insert(0, '/home/jindo/PycharmProjects/mega-nerf')
-
-import sys
-sys.path.insert(0, '/home/hyunjin/PycharmProjects/mega-nerf')
+sys.path.insert(0, '/home/jindo/PycharmProjects/mega-nerf-origin')
 
 from mega_nerf.misc_utils import main_tqdm, main_print
 from mega_nerf.opts import get_opts_base
@@ -26,6 +23,7 @@ def _get_mask_opts() -> Namespace:
     parser = get_opts_base()
 
     parser.add_argument('--dataset_path', type=str, required=True)
+    parser.add_argument('--segmentation_path', type=str, default=None)
     parser.add_argument('--output', type=str, required=True)
     parser.add_argument('--grid_dim', nargs='+', type=int, required=True)
     parser.add_argument('--ray_samples', type=int, default=1000)
@@ -58,7 +56,7 @@ def main(hparams: Namespace) -> None:
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     dataset_path = Path(hparams.dataset_path)
-    coordinate_info = torch.load(dataset_path / 'coordinates.pt')
+    coordinate_info = torch.load(dataset_path / 'coordinates.pt', map_location='cpu')
     origin_drb = coordinate_info['origin_drb']
     pose_scale_factor = coordinate_info['pose_scale_factor']
 
@@ -76,7 +74,7 @@ def main(hparams: Namespace) -> None:
     main_print('Coord range: {} {}'.format(min_position, max_position))
 
     ranges = max_position[1:] - min_position[1:]
-    offsets = [torch.arange(s) * ranges[i] / s + ranges[i] / (s * 2) for i, s in enumerate(hparams.grid_dim)]  #grid input 넣은 shape 대로 나옴. 2 4 --> (2,),(4,)
+    offsets = [torch.arange(s) * ranges[i] / s + ranges[i] / (s * 2) for i, s in enumerate(hparams.grid_dim)] #grid input 넣은 shape 대로 나옴. 2 4 --> (2,),(4,)
     centroids = torch.stack((torch.zeros(hparams.grid_dim[0], hparams.grid_dim[1]),  # Ignore altitude dimension
                              torch.ones(hparams.grid_dim[0], hparams.grid_dim[1]) * min_position[1],
                              torch.ones(hparams.grid_dim[0], hparams.grid_dim[1]) * min_position[2])).permute(1, 2, 0)
@@ -102,7 +100,8 @@ def main(hparams: Namespace) -> None:
         'centroids': centroids,
         'grid_dim': (hparams.grid_dim),
         'min_position': min_position,
-        'max_position': max_position
+        'max_position': max_position,
+        'cluster_2d': hparams.cluster_2d
     }, output_path / 'params.pt')
 
     z_steps = torch.linspace(0, 1, hparams.ray_samples, device=device)  # (N_samples)
@@ -115,6 +114,7 @@ def main(hparams: Namespace) -> None:
     if 'RANK' in os.environ:
         dist.barrier()
 
+    cluster_dim_start = 1 if hparams.cluster_2d else 0
     for subdir in ['train', 'val']:
         metadata_paths = list((dataset_path / subdir / 'metadata').iterdir())
         for i in main_tqdm(np.arange(rank, len(metadata_paths), world_size)):
@@ -124,8 +124,8 @@ def main(hparams: Namespace) -> None:
                 # Check to see if mask has been generated already
                 all_valid = True
                 filename = metadata_path.stem + '.pt'
-                for i in range(centroids.shape[0]):
-                    mask_path = output_path / str(i) / filename
+                for j in range(centroids.shape[0]):
+                    mask_path = output_path / str(j) / filename
                     if not mask_path.exists():
                         all_valid = False
                         break
@@ -173,8 +173,9 @@ def main(hparams: Namespace) -> None:
 
                 min_distances = []
                 cluster_distances = []
-                for i in range(0, xyz.shape[0], hparams.dist_chunk_size):
-                    distances = torch.cdist(xyz[i:i + hparams.dist_chunk_size], centroids)
+                for k in range(0, xyz.shape[0], hparams.dist_chunk_size):
+                    distances = torch.cdist(xyz[k:k + hparams.dist_chunk_size, cluster_dim_start:],
+                                            centroids[:, cluster_dim_start:])
                     cluster_distances.append(distances)
                     min_distances.append(distances.min(dim=1)[0])
 
@@ -191,14 +192,25 @@ def main(hparams: Namespace) -> None:
 
             min_dist_ratios = torch.cat(min_dist_ratios).view(metadata['H'], metadata['W'], centroids.shape[0])
 
-            for i in range(centroids.shape[0]):
-                cluster_ratios = min_dist_ratios[:, :, i]
+            filename = (metadata_path.stem + '.pt')
+
+            if hparams.segmentation_path is not None:
+                with ZipFile(Path(hparams.segmentation_path) / filename) as zf:
+                    with zf.open(filename) as zf2:
+                        segmentation_mask = torch.load(zf2, map_location='cpu')
+
+            for j in range(centroids.shape[0]):
+                cluster_ratios = min_dist_ratios[:, :, j]
                 ray_in_cluster = cluster_ratios <= hparams.boundary_margin
 
-                filename = (metadata_path.stem + '.pt')
-                with ZipFile(output_path / str(i) / filename, compression=zipfile.ZIP_DEFLATED, mode='w') as zf:
+                with ZipFile(output_path / str(j) / filename, compression=zipfile.ZIP_DEFLATED, mode='w') as zf:
                     with zf.open(filename, 'w') as f:
-                        torch.save(ray_in_cluster.cpu(), f)
+                        cluster_mask = ray_in_cluster.cpu()
+
+                        if hparams.segmentation_path is not None:
+                            cluster_mask = torch.logical_and(cluster_mask, segmentation_mask)
+
+                        torch.save(cluster_mask, f)
 
                 del ray_in_cluster
 
